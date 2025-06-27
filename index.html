@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Calculadora de Mão de Obra de Caixilhos</title>
+    <!-- Inclui o Tailwind CSS via CDN para estilos rápidos e responsivos -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Importa a fonte Inter do Google Fonts para uma tipografia moderna -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f0f2f5; /* Cor de fundo suave */
+        }
+        /* Estilos personalizados para a caixa de mensagem */
+        .message-box {
+            padding: 12px 20px;
+            margin-bottom: 16px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            text-align: center;
+            opacity: 0; /* Começa invisível */
+            transform: translateY(-10px); /* Começa um pouco acima */
+            transition: opacity 0.3s ease-out, transform 0.3s ease-out; /* Animação suave */
+        }
+        .message-box.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        .message-box.success {
+            background-color: #d1fae5; /* Verde claro */
+            color: #065f46; /* Verde escuro */
+        }
+        .message-box.error {
+            background-color: #fee2e2; /* Vermelho claro */
+            color: #991b1b; /* Vermelho escuro */
+        }
+        /* Estilo para o campo de resultado */
+        #resultadoCusto {
+            font-size: 2.5rem; /* Tamanho maior para o valor */
+            font-weight: 700;
+            color: #16a34a; /* Verde escuro para destaque */
+            text-align: center;
+            margin-top: 1.5rem;
+            padding: 1rem;
+            background-color: #ecfdf5; /* Fundo verde claro */
+            border-radius: 0.75rem; /* Cantos arredondados */
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease-in-out;
+        }
+        #resultadoCusto.hidden {
+            opacity: 0;
+            transform: scale(0.9);
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+    <div class="bg-white p-6 md:p-8 rounded-xl shadow-lg w-full max-w-2xl">
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-8">Calculadora de Mão de Obra de Caixilhos</h1>
+
+        <!-- Caixa de Mensagem para feedback do utilizador -->
+        <div id="messageBox" class="message-box hidden"></div>
+
+        <form id="calculadoraForm" class="space-y-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <label for="altura" class="block text-sm font-medium text-gray-700 mb-1">Altura (metros)</label>
+                    <input type="number" id="altura" name="altura" placeholder="Ex: 2.10" step="0.01" min="0.1" required
+                           class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                </div>
+                <div>
+                    <label for="largura" class="block text-sm font-medium text-gray-700 mb-1">Largura (metros)</label>
+                    <input type="number" id="largura" name="largura" placeholder="Ex: 1.20" step="0.01" min="0.1" required
+                           class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                </div>
+            </div>
+
+            <div>
+                <label for="tipoCaixilho" class="block text-sm font-medium text-gray-700 mb-1">Tipo de Caixilho</label>
+                <select id="tipoCaixilho" name="tipoCaixilho" required
+                        class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                    <option value="">Selecione o tipo</option>
+                    <option value="janelaSimples">Janela Simples</option>
+                    <option value="janelaCorrer">Janela de Correr</option>
+                    <option value="portaBalcao">Porta Balcão</option>
+                    <option value="outro">Outro</option>
+                </select>
+            </div>
+
+            <div>
+                <label for="complexidade" class="block text-sm font-medium text-gray-700 mb-1">Complexidade da Instalação</label>
+                <select id="complexidade" name="complexidade" required
+                        class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                    <option value="">Selecione a complexidade</option>
+                    <option value="baixa">Baixa</option>
+                    <option value="media">Média</option>
+                    <option value="alta">Alta</option>
+                </select>
+            </div>
+
+            <div>
+                <label for="quantidade" class="block text-sm font-medium text-gray-700 mb-1">Quantidade</label>
+                <input type="number" id="quantidade" name="quantidade" placeholder="Ex: 1" min="1" value="1" required
+                       class="mt-1 block w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+            </div>
+
+            <div>
+                <button type="submit"
+                        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+                    Calcular Mão de Obra
+                </button>
+            </div>
+        </form>
+
+        <div id="resultadoContainer" class="mt-8">
+            <h2 class="text-xl font-semibold text-gray-700 text-center mb-4">Custo Estimado da Mão de Obra:</h2>
+            <div id="resultadoCusto" class="hidden">R$ 0,00</div>
+        </div>
+    </div>
+
+    <script>
+        const calculadoraForm = document.getElementById('calculadoraForm');
+        const alturaInput = document.getElementById('altura');
+        const larguraInput = document.getElementById('largura');
+        const tipoCaixilhoSelect = document.getElementById('tipoCaixilho');
+        const complexidadeSelect = document.getElementById('complexidade');
+        const quantidadeInput = document.getElementById('quantidade');
+        const resultadoCustoDiv = document.getElementById('resultadoCusto');
+        const messageBox = document.getElementById('messageBox');
+
+        /**
+         * Exibe uma mensagem de feedback para o utilizador.
+         * @param {string} message - O texto da mensagem.
+         * @param {('success'|'error')} type - O tipo da mensagem (para estilização).
+         */
+        function showMessage(message, type) {
+            messageBox.textContent = message;
+            messageBox.className = `message-box show ${type}`; // Adiciona classes de estilo
+            messageBox.classList.remove('hidden'); // Garante que a caixa de mensagem esteja visível
+
+            // Esconde a mensagem após alguns segundos
+            setTimeout(() => {
+                messageBox.classList.remove('show'); // Inicia a transição de saída
+                // Oculta completamente após a transição
+                setTimeout(() => {
+                    messageBox.classList.add('hidden');
+                }, 300); // Deve ser igual ou maior que a duração da transição CSS
+            }, 3000); // Mensagem visível por 3 segundos
+        }
+
+        calculadoraForm.addEventListener('submit', (event) => {
+            event.preventDefault(); // Impede o envio padrão do formulário
+
+            const altura = parseFloat(alturaInput.value);
+            const largura = parseFloat(larguraInput.value);
+            const tipoCaixilho = tipoCaixilhoSelect.value;
+            const complexidade = complexidadeSelect.value;
+            const quantidade = parseInt(quantidadeInput.value);
+
+            // Validação de entrada
+            if (isNaN(altura) || altura <= 0 || isNaN(largura) || largura <= 0 ||
+                !tipoCaixilho || !complexidade || isNaN(quantidade) || quantidade <= 0) {
+                showMessage('Por favor, preencha todos os campos corretamente com valores válidos.', 'error');
+                resultadoCustoDiv.classList.add('hidden');
+                return;
+            }
+
+            // Taxas base por metro quadrado para diferentes tipos de caixilho
+            const taxasBase = {
+                janelaSimples: 50.00, // R$ por m²
+                janelaCorrer: 60.00,
+                portaBalcao: 70.00,
+                outro: 55.00
+            };
+
+            // Multiplicadores de complexidade
+            const multiplicadoresComplexidade = {
+                baixa: 1.0,
+                media: 1.2,
+                alta: 1.5
+            };
+
+            const area = altura * largura;
+            const taxaPorM2 = taxasBase[tipoCaixilho];
+            const multiplicador = multiplicadoresComplexidade[complexidade];
+
+            if (!taxaPorM2 || !multiplicador) {
+                showMessage('Erro na configuração das taxas. Por favor, selecione opções válidas.', 'error');
+                resultadoCustoDiv.classList.add('hidden');
+                return;
+            }
+
+            const custoTotal = (area * taxaPorM2 * multiplicador) * quantidade;
+
+            resultadoCustoDiv.textContent = `R$ ${custoTotal.toFixed(2).replace('.', ',')}`;
+            resultadoCustoDiv.classList.remove('hidden');
+            showMessage('Cálculo realizado com sucesso!', 'success');
+        });
+
+        // Oculta o resultado quando qualquer campo de entrada é alterado
+        alturaInput.addEventListener('input', () => resultadoCustoDiv.classList.add('hidden'));
+        larguraInput.addEventListener('input', () => resultadoCustoDiv.classList.add('hidden'));
+        tipoCaixilhoSelect.addEventListener('change', () => resultadoCustoDiv.classList.add('hidden'));
+        complexidadeSelect.addEventListener('change', () => resultadoCustoDiv.classList.add('hidden'));
+        quantidadeInput.addEventListener('input', () => resultadoCustoDiv.classList.add('hidden'));
+
+    </script>
+</body>
+</html>
