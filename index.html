@@ -125,24 +125,18 @@
                 const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
                 if (Object.keys(firebaseConfig).length === 0) {
                     console.error("Firebase config not found. Please provide __firebase_config.");
+                    showMessage("Erro: Configuração do Firebase não encontrada.", "error");
                     return;
                 }
                 const app = initializeApp(firebaseConfig);
                 window.db = getFirestore(app);
                 window.auth = getAuth(app);
 
-                // Authenticate
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(window.auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(window.auth);
-                }
-
-                onAuthStateChanged(window.auth, async (user) => {
+                // Setup auth state listener BEFORE attempting sign-in
+                onAuthStateChanged(window.auth, (user) => {
                     if (user) {
                         console.log("Usuário autenticado:", user.uid);
                         window.userId = user.uid; // Set global userId
-                        // Removed call to ensureRogerioExists();
                         setupFirestoreListeners(); // Start listening to Firestore after auth
                         showMessage('Conectado ao servidor.', 'success');
                     } else {
@@ -151,13 +145,26 @@
                         showMessage('Não autenticado. Operações serão limitadas ou anónimas.', 'info');
                     }
                 });
+
+                // Attempt authentication
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    try {
+                        await signInWithCustomToken(window.auth, __initial_auth_token);
+                    } catch (customTokenError) {
+                        console.warn("Erro ao autenticar com token personalizado, tentando autenticação anónima:", customTokenError);
+                        // If custom token fails, try anonymous sign-in
+                        await signInAnonymously(window.auth);
+                    }
+                } else {
+                    // If no custom token is provided, sign in anonymously
+                    await signInAnonymously(window.auth);
+                }
+
             } catch (error) {
-                console.error("Erro ao inicializar Firebase ou autenticar:", error);
+                console.error("Erro geral ao inicializar Firebase ou autenticar:", error);
                 showMessage(`Erro de conexão: ${error.message}`, 'error');
             }
         }
-
-        // Removed ensureRogerioExists() function
 
         // Function to setup Firestore real-time listeners
         function setupFirestoreListeners() {
@@ -443,15 +450,12 @@
                             <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
                             <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Telefone</th>
                             <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tipo</th>
-                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Gerente</th>
-                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Representantes</th>
-                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ativo</th>
                             <th scope="col" class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider rounded-tr-lg">Ações</th>
                         </tr>
                     </thead>
                     <tbody id="userTableBody" class="bg-white divide-y divide-gray-200">
                         <tr>
-                            <td colspan="9" class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-center">
+                            <td colspan="6" class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-center">
                                 Nenhum utilizador cadastrado.
                             </td>
                         </tr>
@@ -541,7 +545,7 @@
          * @param {string} message - O texto da mensagem.
          * @param {('success'|'error'|'info')} type - O tipo da mensagem (determina a cor).
          */
-        function showMessage(message, type) { // Renamed to showMessage to match global scope
+        function showMessage(message, type) {
             messageBoxApp.textContent = message;
             messageBoxApp.className = `p-3 mb-4 text-sm text-center rounded-lg `;
             messageBoxApp.classList.remove('hidden');
@@ -569,7 +573,7 @@
          * Exibe/oculta o indicador de carregamento.
          * @param {boolean} show - Verdadeiro para mostrar, falso para ocultar.
          */
-        function showLoading(show) { // Renamed to showLoading to match global scope
+        function showLoading(show) {
             if (show) {
                 loadingIndicatorApp.classList.remove('hidden');
             } else {
@@ -710,6 +714,7 @@
             showLoading(true);
             try {
                 const clientsCollectionRef = window.fbCollection(window.db, `artifacts/${window.appId}/public/data/clients_collection`);
+                // This is where the client data is persisted to Firestore.
                 if (docId) {
                     await window.fbSetDoc(window.fbDoc(clientsCollectionRef, docId), clientData, { merge: true });
                     showMessage('Cliente atualizado com sucesso!', 'success');
@@ -1073,6 +1078,7 @@
             showLoading(true);
             try {
                 const usersCollectionRef = window.fbCollection(window.db, `artifacts/${window.appId}/public/data/users_collection`);
+                // This is where the user data is persisted to Firestore.
                 if (docId) {
                     await window.fbSetDoc(window.fbDoc(usersCollectionRef, docId), userData, { merge: true });
                     showMessage('Utilizador atualizado com sucesso!', 'success');
@@ -1206,7 +1212,7 @@
             if (users.length === 0) {
                 const noUsersRow = `
                     <tr>
-                        <td colspan="9" class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-center">
+                        <td colspan="6" class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-center">
                             Nenhum utilizador cadastrado.
                         </td>
                     </tr>
@@ -1220,32 +1226,16 @@
                 row.id = `user-${user.id}`;
                 row.className = 'hover:bg-gray-50';
 
-                // Determina o que exibir para 'Gerente' e 'Representantes'
-                let gerenteDisplay = 'N/A';
-                let representantesDisplay = 'N/A';
-
-                if (user.userType === 'representante') {
-                    gerenteDisplay = user.userGerente || 'N/A';
-                } else if (user.userType === 'gerente') {
-                    const allUsers = window.allUsers || [];
-                    const managerName = user.userName;
-                    const associatedReps = allUsers.filter(rep =>
-                        rep.userType === 'representante' &&
-                        rep.userGerente === managerName
-                    ).map(rep => rep.userName);
-                    representantesDisplay = (associatedReps.length > 0) ? associatedReps.join(', ') : 'N/A';
-                }
-
-
+                // Determine what to display for 'Gerente' and 'Representantes'
+                // These fields are now handled only in the form for specific user types
+                // and are not displayed in the main table for all users.
+                
                 row.innerHTML = `
                     <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${user.id}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${user.userName}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${user.userEmail}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${formatPhone(user.userPhone || '') || 'N/A'}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${user.userType || 'N/A'}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${gerenteDisplay}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${representantesDisplay}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${user.userActive ? 'Sim' : 'Não'}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium flex justify-center space-x-2">
                         <button type="button" onclick="editUser('${user.id}')" class="text-blue-600 hover:text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 p-2 rounded-full hover:bg-blue-100 transition-colors">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
