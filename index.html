@@ -80,7 +80,115 @@
             border-bottom: 2px solid #3b82f6;
             color: #3b82f6;
         }
+
+        /* Loading Spinner */
+        .loading-spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-left-color: #3b82f6;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
     </style>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+        import { getFirestore, collection, query, where, getDocs, addDoc, setDoc, deleteDoc, onSnapshot, doc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+        // Global Firebase variables (will be set after initialization)
+        window.db = null;
+        window.auth = null;
+        window.appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id'; // Provided by environment
+
+        // Expose Firestore functions globally
+        window.fbCollection = collection;
+        window.fbQuery = query;
+        window.fbWhere = where;
+        window.fbGetDocs = getDocs;
+        window.fbAddDoc = addDoc;
+        window.fbSetDoc = setDoc;
+        window.fbDeleteDoc = deleteDoc;
+        window.fbOnSnapshot = onSnapshot;
+        window.fbDoc = doc; // Added doc
+
+        // Function to initialize Firebase and authenticate
+        async function initFirebase() {
+            try {
+                const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+                if (Object.keys(firebaseConfig).length === 0) {
+                    console.error("Firebase config not found. Please provide __firebase_config.");
+                    return;
+                }
+                const app = initializeApp(firebaseConfig);
+                window.db = getFirestore(app);
+                window.auth = getAuth(app);
+
+                // Authenticate
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(window.auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(window.auth);
+                }
+
+                onAuthStateChanged(window.auth, async (user) => {
+                    if (user) {
+                        console.log("Usuário autenticado:", user.uid);
+                        window.userId = user.uid; // Set global userId
+                        // Removed call to ensureRogerioExists();
+                        setupFirestoreListeners(); // Start listening to Firestore after auth
+                        showMessage('Conectado ao servidor.', 'success');
+                    } else {
+                        console.log("Usuário não autenticado.");
+                        window.userId = crypto.randomUUID(); // Fallback for anonymous
+                        showMessage('Não autenticado. Operações serão limitadas ou anónimas.', 'info');
+                    }
+                });
+            } catch (error) {
+                console.error("Erro ao inicializar Firebase ou autenticar:", error);
+                showMessage(`Erro de conexão: ${error.message}`, 'error');
+            }
+        }
+
+        // Removed ensureRogerioExists() function
+
+        // Function to setup Firestore real-time listeners
+        function setupFirestoreListeners() {
+            // Clients listener
+            const clientsCollectionRef = window.fbCollection(window.db, `artifacts/${window.appId}/public/data/clients_collection`);
+            window.fbOnSnapshot(clientsCollectionRef, (snapshot) => {
+                const clients = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                window.allClients = clients; // Store globally for filtering
+                filterClients(); // Re-render clients whenever data changes
+            }, (error) => {
+                console.error("Erro ao obter clientes em tempo real:", error);
+                showMessage("Erro ao carregar clientes do servidor.", "error");
+            });
+
+            // Users listener
+            const usersCollectionRef = window.fbCollection(window.db, `artifacts/${window.appId}/public/data/users_collection`);
+            window.fbOnSnapshot(usersCollectionRef, (snapshot) => {
+                const users = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                window.allUsers = users; // Store globally for filtering and dropdowns
+                populateRepresentantes();
+                populateGerentes();
+                filterUsers(); // Re-render users whenever data changes
+            }, (error) => {
+                console.error("Erro ao obter utilizadores em tempo real:", error);
+                showMessage("Erro ao carregar utilizadores do servidor.", "error");
+            });
+        }
+
+        // Initialize Firebase when the DOM is fully loaded
+        document.addEventListener('DOMContentLoaded', initFirebase);
+    </script>
 </head>
 <body>
     <div class="bg-white p-6 md:p-8 rounded-xl shadow-lg w-full max-w-4xl mx-auto my-8">
@@ -97,6 +205,10 @@
         </div>
 
         <div id="messageBox" class="hidden p-3 mb-4 text-sm text-center rounded-lg" role="alert"></div>
+        <div id="loadingIndicator" class="hidden p-3 mb-4 text-sm text-center rounded-lg bg-blue-100 text-blue-800">
+            <div class="loading-spinner"></div>
+            A carregar dados...
+        </div>
 
         <!-- Secção Clientes -->
         <div id="clientsSection" class="tab-content">
@@ -365,6 +477,7 @@
         const tabUtilizadores = document.getElementById('tabUtilizadores');
         const clientsSection = document.getElementById('clientsSection');
         const usersSection = document.getElementById('usersSection');
+        const loadingIndicatorApp = document.getElementById('loadingIndicator');
 
         const clientForm = document.getElementById('clientForm');
         const nomeInput = document.getElementById('nome');
@@ -408,7 +521,7 @@
 
 
         // Elementos comuns
-        const messageBox = document.getElementById('messageBox');
+        const messageBoxApp = document.getElementById('messageBox');
         const confirmModal = document.getElementById('confirmModal');
         const confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
         const cancelDeleteBtn = document.getElementById('cancelDeleteBtn');
@@ -418,34 +531,50 @@
         let itemToDeleteId = null;
         let currentDeleteItemType = null;
 
+        // Global arrays to store data locally after Firestore sync
+        window.allClients = [];
+        window.allUsers = [];
+
         // --- Funções Utilitárias Comuns ---
         /**
          * Exibe uma mensagem na caixa de mensagens.
          * @param {string} message - O texto da mensagem.
          * @param {('success'|'error'|'info')} type - O tipo da mensagem (determina a cor).
          */
-        function showMessage(message, type) {
-            messageBox.textContent = message;
-            messageBox.className = `p-3 mb-4 text-sm text-center rounded-lg `;
-            messageBox.classList.remove('hidden');
+        function showMessage(message, type) { // Renamed to showMessage to match global scope
+            messageBoxApp.textContent = message;
+            messageBoxApp.className = `p-3 mb-4 text-sm text-center rounded-lg `;
+            messageBoxApp.classList.remove('hidden');
 
             switch (type) {
                 case 'success':
-                    messageBox.classList.add('bg-green-100', 'text-green-800');
+                    messageBoxApp.classList.add('bg-green-100', 'text-green-800');
                     break;
                 case 'error':
-                    messageBox.classList.add('bg-red-100', 'text-red-800');
+                    messageBoxApp.classList.add('bg-red-100', 'text-red-800');
                     break;
                 case 'info':
-                    messageBox.classList.add('bg-blue-100', 'text-blue-800');
+                    messageBoxApp.classList.add('bg-blue-100', 'text-blue-800');
                     break;
                 default:
-                    messageBox.classList.add('bg-gray-100', 'text-gray-800');
+                    messageBoxApp.classList.add('bg-gray-100', 'text-gray-800');
             }
 
             setTimeout(() => {
-                messageBox.classList.add('hidden');
+                messageBoxApp.classList.add('hidden');
             }, 3000);
+        }
+
+        /**
+         * Exibe/oculta o indicador de carregamento.
+         * @param {boolean} show - Verdadeiro para mostrar, falso para ocultar.
+         */
+        function showLoading(show) { // Renamed to showLoading to match global scope
+            if (show) {
+                loadingIndicatorApp.classList.remove('hidden');
+            } else {
+                loadingIndicatorApp.classList.add('hidden');
+            }
         }
 
         /**
@@ -497,10 +626,10 @@
 
         /**
          * Exibe o modal de confirmação personalizado.
-         * @param {number} id - O ID do item a ser excluído.
+         * @param {string} id - O ID do item a ser excluído (document ID from Firestore).
          * @param {string} type - O tipo de item ('client' ou 'user').
          */
-        function showConfirmModal(id, type) {
+        window.showConfirmModal = function(id, type) {
             itemToDeleteId = id;
             currentDeleteItemType = type;
             confirmModal.classList.remove('hidden');
@@ -515,14 +644,23 @@
             currentDeleteItemType = null;
         }
 
-        confirmDeleteBtn.addEventListener('click', () => {
+        confirmDeleteBtn.addEventListener('click', async () => {
             if (itemToDeleteId !== null && currentDeleteItemType !== null) {
-                if (currentDeleteItemType === 'client') {
-                    deleteClient(itemToDeleteId);
-                } else if (currentDeleteItemType === 'user') {
-                    deleteUser(itemToDeleteId);
+                showLoading(true);
+                try {
+                    if (currentDeleteItemType === 'client') {
+                        await deleteClient(itemToDeleteId);
+                    } else if (currentDeleteItemType === 'user') {
+                        await deleteUser(itemToDeleteId);
+                    }
+                    hideConfirmModal();
+                    showMessage(`${currentDeleteItemType === 'client' ? 'Cliente' : 'Utilizador'} excluído com sucesso!`, 'success');
+                } catch (error) {
+                    console.error(`Erro ao excluir ${currentDeleteItemType}:`, error);
+                    showMessage(`Erro ao excluir ${currentDeleteItemType === 'client' ? 'cliente' : 'utilizador'}.`, 'error');
+                } finally {
+                    showLoading(false);
                 }
-                hideConfirmModal();
             }
         });
 
@@ -545,11 +683,13 @@
             if (tabName === 'clients') {
                 clientsSection.classList.remove('hidden');
                 tabClientes.classList.add('active');
+                // Data for clients comes from onSnapshot in initFirebase
                 populateRepresentantes();
                 filterClients();
             } else if (tabName === 'users') {
                 usersSection.classList.remove('hidden');
-                tabUtilizadores.classList.add('active'); // Corrigido para tabUtilizadores
+                tabUtilizadores.classList.add('active');
+                // Data for users comes from onSnapshot in initFirebase
                 populateGerentes();
                 toggleUserSpecificFields();
                 filterUsers();
@@ -557,34 +697,49 @@
         }
 
         tabClientes.addEventListener('click', () => showTab('clients'));
-        tabUtilizadores.addEventListener('click', () => showTab('users')); // Corrigido para tabUtilizadores
+        tabUtilizadores.addEventListener('click', () => showTab('users'));
 
 
-        // --- Funções Específicas de Clientes ---
+        // --- Funções Específicas de Clientes (Firestore) ---
         /**
-         * Carrega clientes do localStorage.
-         * @returns {Array<Object>} Um array de objetos de cliente.
+         * Adiciona ou atualiza um cliente no Firestore.
+         * @param {Object} clientData - Os dados do cliente.
+         * @param {string|null} docId - O ID do documento se estiver a editar, ou null para um novo.
          */
-        function loadClients() {
+        async function saveClientToFirestore(clientData, docId = null) {
+            showLoading(true);
             try {
-                const clientsJson = localStorage.getItem('clients');
-                return clientsJson ? JSON.parse(clientsJson) : [];
-            } catch (e) {
-                console.error("Erro ao carregar clientes do localStorage:", e);
-                return [];
+                const clientsCollectionRef = window.fbCollection(window.db, `artifacts/${window.appId}/public/data/clients_collection`);
+                if (docId) {
+                    await window.fbSetDoc(window.fbDoc(clientsCollectionRef, docId), clientData, { merge: true });
+                    showMessage('Cliente atualizado com sucesso!', 'success');
+                } else {
+                    await window.fbAddDoc(clientsCollectionRef, clientData);
+                    showMessage('Cliente cadastrado com sucesso!', 'success');
+                }
+            } catch (error) {
+                console.error("Erro ao salvar cliente no Firestore:", error);
+                showMessage(`Erro ao salvar cliente: ${error.message}`, 'error');
+            } finally {
+                showLoading(false);
             }
         }
 
         /**
-         * Salva clientes no localStorage.
-         * @param {Array<Object>} clients - Um array de objetos de cliente a ser salvo.
+         * Elimina um cliente do Firestore.
+         * @param {string} docId - O ID do documento do cliente a eliminar.
          */
-        function saveClients(clients) {
+        async function deleteClient(docId) {
+            showLoading(true);
             try {
-                localStorage.setItem('clients', JSON.stringify(clients));
-            } catch (e) {
-                console.error("Erro ao salvar clientes no localStorage:", e);
-                showMessage("Erro ao salvar dados no navegador.", "error");
+                const clientsCollectionRef = window.fbCollection(window.db, `artifacts/${window.appId}/public/data/clients_collection`);
+                await window.fbDeleteDoc(window.fbDoc(clientsCollectionRef, docId));
+                // UI update is handled by onSnapshot
+            } catch (error) {
+                console.error("Erro ao eliminar cliente do Firestore:", error);
+                throw error; // Re-throw to be caught by the modal's error handling
+            } finally {
+                showLoading(false);
             }
         }
 
@@ -654,10 +809,10 @@
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${client.reservado ? 'Sim' : 'Não'}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${client.dataReserva ? new Date(client.dataReserva).toLocaleDateString('pt-BR') : 'N/A'}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium flex justify-center space-x-2">
-                        <button type="button" onclick="editClient(${client.id})" class="text-blue-600 hover:text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 p-2 rounded-full hover:bg-blue-100 transition-colors">
+                        <button type="button" onclick="editClient('${client.id}')" class="text-blue-600 hover:text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 p-2 rounded-full hover:bg-blue-100 transition-colors">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
                         </button>
-                        <button type="button" onclick="showConfirmModal(${client.id}, 'client')" class="text-red-600 hover:text-red-900 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50 p-2 rounded-full hover:bg-red-100 transition-colors">
+                        <button type="button" onclick="showConfirmModal('${client.id}', 'client')" class="text-red-600 hover:text-red-900 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50 p-2 rounded-full hover:bg-red-100 transition-colors">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                         </button>
                     </td>
@@ -666,7 +821,7 @@
             });
         }
 
-        clientForm.addEventListener('submit', (event) => {
+        clientForm.addEventListener('submit', async (event) => {
             event.preventDefault();
 
             const nome = nomeInput.value.trim();
@@ -697,69 +852,33 @@
                 return;
             }
 
-            let clients = loadClients();
-
-            if (editingClientId !== null) {
-                const clientIndex = clients.findIndex(c => c.id === editingClientId);
-                if (clientIndex > -1) {
-                    const emailExists = clients.some(c => c.email === email && c.id !== editingClientId);
-                    if (emailExists) {
-                        showMessage('Erro: Este email já está cadastrado para outro cliente.', 'error');
-                        return;
-                    }
-
-                    clients[clientIndex] = {
-                        ...clients[clientIndex],
-                        nome,
-                        razaoSocial,
-                        nomeFantasia,
-                        cnpj: cnpj.replace(/\D/g, ''),
-                        email,
-                        telefone: telefone.replace(/\D/g, ''),
-                        representante,
-                        reservado,
-                        dataReserva,
-                        cep: cep.replace(/\D/g, ''),
-                        logradouro,
-                        numero,
-                        bairro,
-                        cidade,
-                        estado
-                    };
-                    showMessage('Cliente atualizado com sucesso!', 'success');
-                }
-            } else {
-                const emailExists = clients.some(c => c.email === email);
-                if (emailExists) {
-                    showMessage('Erro: Este email já está cadastrado.', 'error');
-                    return;
-                }
-
-                const newId = clients.length > 0 ? Math.max(...clients.map(c => c.id)) + 1 : 1;
-                const newClient = {
-                    id: newId,
-                    nome,
-                    razaoSocial,
-                    nomeFantasia,
-                    cnpj: cnpj.replace(/\D/g, ''),
-                    email,
-                    telefone: telefone.replace(/\D/g, ''),
-                    representante,
-                    reservado,
-                    dataReserva,
-                    cep: cep.replace(/\D/g, ''),
-                    logradouro,
-                    numero,
-                    bairro,
-                    cidade,
-                    estado
-                };
-                clients.push(newClient);
-                showMessage('Cliente cadastrado com sucesso!', 'success');
+            // Check for duplicate email only for new clients or if email is changed during edit
+            const emailExists = window.allClients.some(c => c.email === email && c.id !== editingClientId);
+            if (emailExists) {
+                showMessage('Erro: Este email já está cadastrado para outro cliente.', 'error');
+                return;
             }
 
-            saveClients(clients);
-            filterClients();
+            const clientData = {
+                nome,
+                razaoSocial,
+                nomeFantasia,
+                cnpj: cnpj.replace(/\D/g, ''),
+                email,
+                telefone: telefone.replace(/\D/g, ''),
+                representante,
+                reservado,
+                dataReserva,
+                cep: cep.replace(/\D/g, ''),
+                logradouro,
+                numero,
+                bairro,
+                cidade,
+                estado
+            };
+
+            await saveClientToFirestore(clientData, editingClientId);
+
             clientForm.reset();
             editingClientId = null;
             saveClientButton.textContent = 'Cadastrar Cliente';
@@ -772,8 +891,7 @@
         });
 
         window.editClient = function(id) {
-            const clients = loadClients();
-            const clientToEdit = clients.find(client => client.id === id);
+            const clientToEdit = window.allClients.find(client => client.id === id);
 
             if (clientToEdit) {
                 razaoSocialInput.value = clientToEdit.razaoSocial || '';
@@ -809,21 +927,6 @@
             }
         };
 
-        function deleteClient(id) {
-            let clients = loadClients();
-            clients = clients.filter(client => client.id !== id);
-            saveClients(clients);
-            filterClients();
-            showMessage('Cliente excluído com sucesso!', 'success');
-            if (editingClientId === id) {
-                clientForm.reset();
-                editingClientId = null;
-                saveClientButton.textContent = 'Cadastrar Cliente';
-                cancelClientEditButton.classList.add('hidden');
-                toggleDataReservaField();
-            }
-        }
-
         cancelClientEditButton.addEventListener('click', () => {
             clientForm.reset();
             editingClientId = null;
@@ -858,6 +961,7 @@
                 return;
             }
 
+            showLoading(true);
             try {
                 const response = await fetch(`https://viacep.com.br/ws/${cleanedCep}/json/`);
                 const data = await response.json();
@@ -879,6 +983,8 @@
             } catch (error) {
                 console.error('Erro ao buscar Código Postal:', error);
                 showMessage('Erro ao buscar Código Postal. Tente novamente.', 'error');
+            } finally {
+                showLoading(false);
             }
         }
 
@@ -887,7 +993,7 @@
          */
         function filterClients() {
             const searchTerm = clientSearchInput.value.trim().toLowerCase();
-            let clients = loadClients();
+            let clients = window.allClients || [];
 
             if (searchTerm === '') {
                 renderClients(clients);
@@ -939,7 +1045,7 @@
          * Preenche o dropdown 'Representante' com utilizadores ativos do tipo 'representante'.
          */
         function populateRepresentantes() {
-            const users = loadUsers();
+            const users = window.allUsers || [];
             const representantes = users.filter(user => user.userType === 'representante' && user.userActive);
 
             representanteSelect.innerHTML = '';
@@ -957,65 +1063,61 @@
         }
 
 
-        // --- Funções Específicas de Utilizadores ---
+        // --- Funções Específicas de Utilizadores (Firestore) ---
         /**
-         * Carrega utilizadores do localStorage. Se não houver utilizadores, inicializa com um utilizador padrão.
-         * @returns {Array<Object>} Um array de objetos de utilizador.
+         * Adiciona ou atualiza um utilizador no Firestore.
+         * @param {Object} userData - Os dados do utilizador.
+         * @param {string|null} docId - O ID do documento se estiver a editar, ou null para um novo.
          */
-        function loadUsers() {
+        async function saveUserToFirestore(userData, docId = null) {
+            showLoading(true);
             try {
-                let users = JSON.parse(localStorage.getItem('users'));
-                if (!users || users.length === 0) {
-                    // Inicializa com Rogério se nenhum utilizador for encontrado
-                    users = [{
-                        id: 1,
-                        userName: "Rogerio",
-                        userEmail: "rogerio.belmiro@atlantica.com.br",
-                        userPhone: "11964145572",
-                        userType: "administrador",
-                        userPassword: "1234", // Armazenando senha para fins de demonstração
-                        userActive: true,
-                        userGerente: ""
-                    }];
-                    localStorage.setItem('users', JSON.stringify(users)); // Salva o utilizador inicializado
+                const usersCollectionRef = window.fbCollection(window.db, `artifacts/${window.appId}/public/data/users_collection`);
+                if (docId) {
+                    await window.fbSetDoc(window.fbDoc(usersCollectionRef, docId), userData, { merge: true });
+                    showMessage('Utilizador atualizado com sucesso!', 'success');
                 } else {
-                    // Verifica se Rogério já existe para evitar duplicatas em carregamentos subsequentes
-                    const rogerioExists = users.some(user => user.userEmail === "rogerio.belmiro@atlantica.com.br");
-                    if (!rogerioExists) {
-                        const newId = users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1;
-                        users.push({
-                            id: newId,
-                            userName: "Rogerio",
-                            userEmail: "rogerio.belmiro@atlantica.com.br",
-                            userPhone: "11964145572",
-                            userType: "administrador",
-                            userPassword: "1234",
-                            userActive: true,
-                            userGerente: ""
-                        });
-                        localStorage.setItem('users', JSON.stringify(users));
-                    }
+                    await window.fbAddDoc(usersCollectionRef, userData);
+                    showMessage('Utilizador cadastrado com sucesso!', 'success');
                 }
-                return users;
-            } catch (e) {
-                console.error("Erro ao carregar utilizadores do localStorage:", e);
-                return [];
+            } catch (error) {
+                console.error("Erro ao salvar utilizador no Firestore:", error);
+                showMessage(`Erro ao salvar utilizador: ${error.message}`, 'error');
+            } finally {
+                showLoading(false);
             }
         }
 
         /**
-         * Salva utilizadores no localStorage.
-         * @param {Array<Object>} users - Um array de objetos de utilizador a ser salvo.
+         * Elimina um utilizador do Firestore.
+         * @param {string} docId - O ID do documento do utilizador a eliminar.
          */
-        function saveUsers(users) {
+        async function deleteUser(docId) {
+            showLoading(true);
             try {
-                localStorage.setItem('users', JSON.stringify(users));
-            } catch (e) {
-                console.error("Erro ao salvar utilizadores no localStorage:", e);
-                showMessage("Erro ao salvar dados do utilizador no navegador.", "error");
+                const usersCollectionRef = window.fbCollection(window.db, `artifacts/${window.appId}/public/data/users_collection`);
+                const deletedUser = window.allUsers.find(user => user.id === docId);
+
+                // Delete the user document
+                await window.fbDeleteDoc(window.fbDoc(usersCollectionRef, docId));
+
+                // If the deleted user was a manager, clear their name from associated representatives
+                if (deletedUser && deletedUser.userType === 'gerente') {
+                    const associatedReps = window.allUsers.filter(user =>
+                        user.userType === 'representante' && user.userGerente === deletedUser.userName
+                    );
+
+                    for (const rep of associatedReps) {
+                        await window.fbSetDoc(window.fbDoc(usersCollectionRef, rep.id), { userGerente: '' }, { merge: true });
+                    }
+                }
+                // UI update is handled by onSnapshot
+            } catch (error) {
+                console.error("Erro ao eliminar utilizador do Firestore:", error);
+                throw error; // Re-throw to be caught by the modal's error handling
+            } finally {
+                showLoading(false);
             }
-            populateRepresentantes();
-            populateGerentes();
         }
 
         /**
@@ -1046,7 +1148,7 @@
          * Preenche o dropdown 'Gerente' com utilizadores ativos do tipo 'gerente'.
          */
         function populateGerentes() {
-            const users = loadUsers();
+            const users = window.allUsers || [];
             const gerentes = users.filter(user => user.userType === 'gerente' && user.userActive);
 
             userGerenteSelect.innerHTML = '';
@@ -1068,7 +1170,7 @@
          * @param {string} managerName - O nome do gerente para o qual encontrar representantes.
          */
         function updateRepresentativesDisplayForManager(managerName) {
-            const users = loadUsers();
+            const users = window.allUsers || [];
             const assignedRepresentatives = users.filter(user =>
                 user.userType === 'representante' &&
                 user.userActive &&
@@ -1125,7 +1227,7 @@
                 if (user.userType === 'representante') {
                     gerenteDisplay = user.userGerente || 'N/A';
                 } else if (user.userType === 'gerente') {
-                    const allUsers = loadUsers();
+                    const allUsers = window.allUsers || [];
                     const managerName = user.userName;
                     const associatedReps = allUsers.filter(rep =>
                         rep.userType === 'representante' &&
@@ -1145,10 +1247,10 @@
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${representantesDisplay}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${user.userActive ? 'Sim' : 'Não'}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium flex justify-center space-x-2">
-                        <button type="button" onclick="editUser(${user.id})" class="text-blue-600 hover:text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 p-2 rounded-full hover:bg-blue-100 transition-colors">
+                        <button type="button" onclick="editUser('${user.id}')" class="text-blue-600 hover:text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 p-2 rounded-full hover:bg-blue-100 transition-colors">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
                         </button>
-                        <button type="button" onclick="showConfirmModal(${user.id}, 'user')" class="text-red-600 hover:text-red-900 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50 p-2 rounded-full hover:bg-red-100 transition-colors">
+                        <button type="button" onclick="showConfirmModal('${user.id}', 'user')" class="text-red-600 hover:text-red-900 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50 p-2 rounded-full hover:bg-red-100 transition-colors">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                         </button>
                     </td>
@@ -1157,7 +1259,7 @@
             });
         }
 
-        userForm.addEventListener('submit', (event) => {
+        userForm.addEventListener('submit', async (event) => {
             event.preventDefault();
 
             const userName = userNameInput.value.trim();
@@ -1183,55 +1285,25 @@
                 return;
             }
 
-            let users = loadUsers();
-            users = users.filter(user => user.userEmail !== "rogerio.belmiro@atlantica.com.br");
-
-
-            if (editingUserId !== null) {
-                const userIndex = users.findIndex(u => u.id === editingUserId);
-                if (userIndex > -1) {
-                    const emailExists = users.some(u => u.userEmail === userEmail && u.id !== editingUserId);
-                    if (emailExists) {
-                        showMessage('Erro: Este email já está cadastrado para outro utilizador.', 'error');
-                        return;
-                    }
-
-                    users[userIndex] = {
-                        ...users[userIndex],
-                        userName,
-                        userEmail,
-                        userPhone: userPhone.replace(/\D/g, ''),
-                        userType,
-                        userPassword: userPassword,
-                        userActive,
-                        userGerente: userGerente,
-                    };
-                    showMessage('Utilizador atualizado com sucesso!', 'success');
-                }
-            } else {
-                const emailExists = users.some(u => u.userEmail === userEmail);
-                if (emailExists) {
-                    showMessage('Erro: Este email já está cadastrado.', 'error');
-                    return;
-                }
-
-                const newId = users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1;
-                const newUser = {
-                    id: newId,
-                    userName,
-                    userEmail,
-                    userPhone: userPhone.replace(/\D/g, ''),
-                    userType,
-                    userPassword: userPassword,
-                    userActive,
-                    userGerente: userGerente,
-                };
-                users.push(newUser);
-                showMessage('Utilizador cadastrado com sucesso!', 'success');
+            // Check for duplicate email only for new users or if email is changed during edit
+            const emailExists = window.allUsers.some(u => u.userEmail === userEmail && u.id !== editingUserId);
+            if (emailExists) {
+                showMessage('Erro: Este email já está cadastrado para outro utilizador.', 'error');
+                return;
             }
 
-            saveUsers(users);
-            filterUsers();
+            const userData = {
+                userName,
+                userEmail,
+                userPhone: userPhone.replace(/\D/g, ''),
+                userType,
+                userPassword: userPassword,
+                userActive,
+                userGerente: userGerente,
+            };
+
+            await saveUserToFirestore(userData, editingUserId);
+
             userForm.reset();
             editingUserId = null;
             saveUserButton.textContent = 'Cadastrar Utilizador';
@@ -1240,8 +1312,7 @@
         });
 
         window.editUser = function(id) {
-            const users = loadUsers();
-            const userToEdit = users.find(user => user.id === id);
+            const userToEdit = window.allUsers.find(user => user.id === id);
 
             if (userToEdit) {
                 userNameInput.value = userToEdit.userName || '';
@@ -1267,39 +1338,6 @@
             }
         };
 
-        function deleteUser(id) {
-            let users = loadUsers();
-            const deletedUser = users.find(user => user.id === id);
-            users = users.filter(user => user.id !== id);
-            saveUsers(users);
-            showMessage('Utilizador excluído com sucesso!', 'success');
-            
-            let changesMadeToOtherUsers = false;
-
-            if (deletedUser && deletedUser.userType === 'gerente') {
-                let currentUsers = loadUsers();
-                currentUsers.forEach(user => {
-                    if (user.userType === 'representante' && user.userGerente === deletedUser.userName) {
-                        user.userGerente = '';
-                        changesMadeToOtherUsers = true;
-                    }
-                });
-                if (changesMadeToOtherUsers) {
-                    saveUsers(currentUsers);
-                }
-            }
-
-            filterUsers();
-
-            if (editingUserId === id) {
-                userForm.reset();
-                editingUserId = null;
-                saveUserButton.textContent = 'Cadastrar Utilizador';
-                cancelUserEditButton.classList.add('hidden');
-                toggleUserSpecificFields();
-            }
-        }
-
         cancelUserEditButton.addEventListener('click', () => {
             userForm.reset();
             editingUserId = null;
@@ -1315,7 +1353,7 @@
 
         function filterUsers() {
             const searchTerm = userSearchInput.value.trim().toLowerCase();
-            let users = loadUsers();
+            let users = window.allUsers || [];
 
             if (searchTerm === '') {
                 renderUsers(users);
@@ -1331,7 +1369,7 @@
                 
                 let userRepresentantesString = '';
                 if (user.userType === 'gerente') {
-                    const allUsers = loadUsers();
+                    const allUsers = window.allUsers || [];
                     const userRepresentantesList = allUsers.filter(rep =>
                         rep.userType === 'representante' &&
                         rep.userGerente === user.userName
